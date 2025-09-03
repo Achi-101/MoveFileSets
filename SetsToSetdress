@@ -1,0 +1,274 @@
+import os
+import json
+import shutil
+
+# Maya imports
+try:
+    from PySide2 import QtWidgets, QtCore, QtGui
+    from shiboken2 import wrapInstance
+except ImportError:
+    try:
+        from PySide6 import QtWidgets, QtCore, QtGui
+        from shiboken6 import wrapInstance
+    except ImportError:
+        try:
+            from PySide import QtCore, QtGui
+            from shiboken import wrapInstance
+            QtWidgets = QtGui
+        except ImportError:
+            raise ImportError('Cannot find a compatible PySide/PyQt module.')
+
+import maya.cmds as cmds
+import maya.OpenMaya as om
+
+class CreateMaskFolder():
+    def __init__(self):
+        # UI Controls
+        self.CreateMaskFolder_ListFile = None
+        self.CreateMaskFolder_PathTexture = None
+        self.CreateMaskFolder_PathDestination = None
+        self.CreateMaskFolder_Asset = None
+        self.CreateMaskFolder_Texture = None
+        self.CreateMaskFolder_Udim = None
+        self.CreateMaskFolder_ListMask = None
+        self.action_radio_collection = None
+        self.move_mode_radio = None
+        self.copy_mode_radio = None
+
+    # Get path to the settings file
+    def CreateMaskFolder_GetPathFile(self, *args):
+        PathFile = os.path.dirname(os.path.realpath(__file__.replace("python", "data")))
+        editPath = PathFile.replace("\\", "/")
+        PathFile = editPath + "/CreateMaskFolder/CreateMaskFolder_TextData.json"
+        return PathFile
+
+    # Read settings data
+    def CreateMaskFolder_GetData(self, *args):
+        PathFile = self.CreateMaskFolder_GetPathFile()
+        try:
+            with open(PathFile) as json_file:
+                data = json.load(json_file)        
+        except FileNotFoundError:
+            FirstData = {"CreateMaskFolder_TextData" : "source"}
+            jsonString = json.dumps(FirstData)
+            with open(PathFile, "w") as jsonFile:
+                jsonFile.write(jsonString)
+            with open(PathFile) as json_file:
+                data = json.load(json_file)
+        return data
+
+    # Save mask names
+    def ContainerMask_SaveData(self, *args):
+        TextData = cmds.textScrollList(self.CreateMaskFolder_ListMask, query=True, allItems=True)
+        PathFile = self.CreateMaskFolder_GetPathFile()
+        Data = self.CreateMaskFolder_GetData() 
+        Data["CreateMaskFolder_TextData"] = sorted(TextData, key=lambda x: x.lower())
+        jsonString = json.dumps(Data)
+        with open(PathFile, "w") as jsonFile:
+            jsonFile.write(jsonString)
+
+    # Get base asset path from Maya scene
+    def CreateMaskFolder_CheckPath(self, *args):
+        CurrentFile = cmds.file(query=True, sceneName=True)
+        if CurrentFile:  
+            SplitPath = CurrentFile.split("/")
+            try:
+                asset_index = SplitPath.index("asset")
+                base_path = os.sep.join(SplitPath[:asset_index + 1])
+                return base_path
+            except ValueError:
+                om.MGlobal.displayWarning("The current path does not contain 'asset' folder. Destination path might be incorrect.")
+        return None
+
+    # Reload source/destination paths and file list
+    def CreateMaskFolder_ReloadPath(self, *args):
+        CurrentFile = cmds.file(query=True, sceneName=True)
+        if not CurrentFile:
+            cmds.textField(self.CreateMaskFolder_PathTexture, edit=True, text="")
+            om.MGlobal.displayWarning("Please save your scene file first.")
+            return
+
+        base_asset_path = os.path.dirname(os.path.dirname(os.path.dirname(CurrentFile)))
+        SourceFolder = os.path.join(base_asset_path, "texture", "version", "v001", "source")
+        
+        if not os.path.exists(SourceFolder):
+            om.MGlobal.displayWarning(f"Source folder does not exist: {SourceFolder}")
+            return
+                
+        cmds.textField(self.CreateMaskFolder_PathTexture, edit=True, text=SourceFolder)
+        self.CreateMaskFolder_ShowDestinationPath()
+        self.CreateMaskFolder_ReloadSource()
+        self.CreateMaskFolder_ResetTextFunction()
+
+    # Reload source file list
+    def CreateMaskFolder_ReloadSource(self, *args):
+        PathFile = cmds.textField(self.CreateMaskFolder_PathTexture, query=True, text=True)
+        if PathFile and os.path.exists(PathFile):
+            Files = [f for f in os.listdir(PathFile) if os.path.isfile(os.path.join(PathFile, f))]
+            if Files:
+                cmds.textScrollList(self.CreateMaskFolder_ListFile, edit=True, removeAll=True)
+                for i in Files:
+                    cmds.textScrollList(self.CreateMaskFolder_ListFile, edit=True, append=i)
+            else:
+                cmds.textScrollList(self.CreateMaskFolder_ListFile, edit=True, removeAll=True)
+                om.MGlobal.displayInfo("Source folder is empty.")
+        else:
+            cmds.textScrollList(self.CreateMaskFolder_ListFile, edit=True, removeAll=True)
+            om.MGlobal.displayWarning("Source folder does not exist or path is invalid.")
+
+    # Show destination path for selected file(s)
+    def CreateMaskFolder_ShowDestinationPath(self, *args):
+        source_folder = cmds.textField(self.CreateMaskFolder_PathTexture, query=True, text=True)
+        selected_files = cmds.textScrollList(self.CreateMaskFolder_ListFile, query=True, selectItem=True)
+        
+        if not source_folder:
+            cmds.textField(self.CreateMaskFolder_PathDestination, edit=True, text="")
+            return
+
+        destination_paths = []
+        files_to_check = selected_files if selected_files else [f for f in os.listdir(source_folder) if os.path.isfile(os.path.join(source_folder, f))]
+        
+        for filename in files_to_check:
+            file_parts = filename.split('_')
+            if len(file_parts) > 2:
+                asset_name = file_parts[0]
+                
+                base_path = self.CreateMaskFolder_CheckPath()
+                if not base_path:
+                    continue
+                    
+                destination_root = os.path.join(base_path, "Setdress", "Interior", asset_name, "texture", "version", "v001")
+                if destination_root not in destination_paths:
+                    destination_paths.append(destination_root)
+        
+        if destination_paths:
+            cmds.textField(self.CreateMaskFolder_PathDestination, edit=True, text=" , ".join(destination_paths))
+        else:
+            cmds.textField(self.CreateMaskFolder_PathDestination, edit=True, text="No valid destination found.")
+
+    # Reset mask text fields
+    def CreateMaskFolder_ResetTextFunction(self, *args):
+        if self.CreateMaskFolder_Asset and cmds.textField(self.CreateMaskFolder_Asset, exists=True):
+            cmds.textField(self.CreateMaskFolder_Asset, edit=True, text="")
+        if self.CreateMaskFolder_Texture and cmds.textField(self.CreateMaskFolder_Texture, exists=True):
+            cmds.textField(self.CreateMaskFolder_Texture, edit=True, text="")
+        if self.CreateMaskFolder_Udim and cmds.textField(self.CreateMaskFolder_Udim, exists=True):
+            cmds.textField(self.CreateMaskFolder_Udim, edit=True, text="")
+
+    # Add mask name to list
+    def CreateMaskFolder_AddMaskFolder(self, *args):
+        Asset = cmds.textField(self.CreateMaskFolder_Asset, query=True, text=True)
+        Texture = cmds.textField(self.CreateMaskFolder_Texture, query=True, text=True)
+        Udim = cmds.textField(self.CreateMaskFolder_Udim, query=True, text=True)
+        if Asset and Texture and Udim:
+            RenameFile = Asset + "_" + Texture + "_" + Udim
+            cmds.textScrollList(self.CreateMaskFolder_ListMask, edit=True, append=RenameFile)
+            self.ContainerMask_SaveData()
+
+    # Remove selected mask from list
+    def CreateMaskFolder_DeleteMaskFolder(self, *args):
+        SelectItem = cmds.textScrollList(self.CreateMaskFolder_ListMask, query=True, selectItem=True)
+        if SelectItem:
+            cmds.textScrollList(self.CreateMaskFolder_ListMask, edit=True, removeItem=SelectItem)
+            self.ContainerMask_SaveData()
+
+    # Move or copy files (main action)
+    def CreateMaskFolder_MoveFile(self, *args):
+        source_folder = cmds.textField(self.CreateMaskFolder_PathTexture, query=True, text=True)
+        mode_radio = cmds.radioCollection(self.action_radio_collection, query=True, select=True)
+        selected_files = cmds.textScrollList(self.CreateMaskFolder_ListFile, query=True, selectItem=True)
+
+        if not selected_files:
+            om.MGlobal.displayWarning("No files selected to process.")
+            return
+
+        # Get the label of the selected radio button
+        mode_label = cmds.radioButton(mode_radio, query=True, label=True)
+
+        for filename in selected_files:
+            full_source_path = os.path.join(source_folder, filename)
+            
+            file_parts = filename.split('_')
+            if len(file_parts) > 2:
+                asset_name = file_parts[0] 
+                texture_name = file_parts[1]
+                
+                base_path = self.CreateMaskFolder_CheckPath()
+                if not base_path:
+                    continue
+                    
+                destination_root = os.path.join(base_path, "Setdress", "Interior", asset_name, "texture", "version", "v001")
+                destination_folder = os.path.join(destination_root, texture_name)
+                
+                try:
+                    if not os.path.exists(destination_folder):
+                        os.makedirs(destination_folder)
+                        om.MGlobal.displayInfo(f"Created folder: {destination_folder}")
+                    
+                    new_destination_path = os.path.join(destination_folder, filename)
+                    
+                    # Move or copy file
+                    if mode_label == "Move":
+                        shutil.move(full_source_path, new_destination_path)
+                        om.MGlobal.displayInfo(f"Moved '{filename}' to '{new_destination_path}'")
+                    elif mode_label == "Copy":
+                        shutil.copy2(full_source_path, new_destination_path)
+                        om.MGlobal.displayInfo(f"Copied '{filename}' to '{new_destination_path}'")
+                    else:
+                        om.MGlobal.displayWarning("No valid mode selected.")
+                except Exception as e:
+                    om.MGlobal.displayError(f"Failed to process file '{filename}': {e}")
+            else:
+                om.MGlobal.displayWarning(f"Skipping '{filename}' as its name format is not as expected (e.g., X_Y_Z).")
+
+        self.CreateMaskFolder_ReloadSource()
+        self.CreateMaskFolder_ShowDestinationPath()
+
+    # Build UI
+    def CreateMaskFolder_UI(self, *args):
+        WinName = "CreateMaskFolder_UI"
+        if cmds.window(WinName, exists=True):
+            cmds.deleteUI(WinName)
+        
+        Window = cmds.window(WinName, title="CreateMaskFolder", s=True, rtf=True, width=520, height=350)
+        
+        main_layout = cmds.columnLayout(adjustableColumn=True)
+        
+        cmds.frameLayout(label="Path File", cll=False, mw=5, mh=5, fn="boldLabelFont")
+        cmds.columnLayout(adjustableColumn=True)
+        cmds.rowLayout(numberOfColumns=3, adjustableColumn=3)
+        cmds.text(label="Source :", width=100, align="left")
+        self.CreateMaskFolder_PathTexture = cmds.textField(width=300, enable=True)
+        cmds.button(label="Reload Path", width=100, command=self.CreateMaskFolder_ReloadPath)
+        cmds.setParent("..") 
+        
+        cmds.rowLayout(numberOfColumns=2, adjustableColumn=2)
+        cmds.text(label="Destination :", width=100, align="left")
+        self.CreateMaskFolder_PathDestination = cmds.textField(width=400, enable=True)
+        cmds.setParent("..") 
+        cmds.setParent("..") 
+        cmds.setParent("..") 
+        
+        cmds.frameLayout(label="File", cll=False, mw=5, mh=5, fn="boldLabelFont")
+        cmds.columnLayout(adjustableColumn=True)
+        self.CreateMaskFolder_ListFile = cmds.textScrollList(allowMultiSelection=True, height=200, selectCommand=self.CreateMaskFolder_ShowDestinationPath)
+        cmds.button(label="Reload File", command=self.CreateMaskFolder_ReloadSource)
+        cmds.setParent("..")
+        cmds.setParent("..")
+        
+        cmds.frameLayout(label="Move/Copy Action", cll=False, mw=5, mh=5, fn="boldLabelFont")
+        cmds.columnLayout(adjustableColumn=True)
+        self.action_radio_collection = cmds.radioCollection()
+        cmds.rowLayout(numberOfColumns=2, adjustableColumn=2)
+        self.move_mode_radio = cmds.radioButton(label="Move", select=True, changeCommand=lambda *x: None, annotation="Move files from source to destination.")
+        self.copy_mode_radio = cmds.radioButton(label="Copy", changeCommand=lambda *x: None, annotation="Copy files from source to destination, leaving originals.")
+        cmds.setParent("..")
+        cmds.button(label="Process Selected Files", command=self.CreateMaskFolder_MoveFile)
+        cmds.setParent("..")
+        cmds.setParent("..")
+
+        cmds.showWindow(Window)
+
+# Run UI
+ui_instance = CreateMaskFolder()
+ui_instance.CreateMaskFolder_UI()
